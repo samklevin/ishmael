@@ -1,0 +1,17 @@
+[project]
+name = "ishmael"
+version = "0.1.0"
+description = "Agent orchestrator using beads (bd) as task database"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.50",
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+ishmael = "ishmael.__main__:main"
+ishmael-mcp = "ishmael.mcp_server:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
