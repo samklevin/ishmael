@@ -32,14 +32,11 @@ Walk through setting up ishmael on this machine. Check what's installed and guid
    - Run `bd status` to see if bd is initialized
    - If not: `bd init` in the repo where beads should be tracked
 
-4. **Install skills globally**:
-   - Run `ishmael setup-skills` to symlink the `/ish-*` slash commands into `~/.claude/skills/`
-   - This makes them available in any repo, not just the ishmael directory
-
-5. **Check MCP server configuration**:
-   - Read the Claude Code settings file (`.claude/settings.local.json` or `~/.claude/settings.json`)
-   - Check if `ishmael-mcp` is configured as an MCP server
-   - If not, guide the user to add it. The MCP server config should point to the ishmael package's `mcp_server.py`
+4. **Install skills and MCP server**:
+   - Run `ishmael setup` — this does two things:
+     - Symlinks the `/ish-*` slash commands into `~/.claude/skills/` (available in any repo)
+     - Configures the `ishmael-mcp` MCP server at the user level with `BEADS_DIR=~/.beads`
+   - If it reports errors (e.g. `claude` or `ishmael-mcp` not on PATH), help the user fix them
 
 6. **Verify**: Run a quick smoke test:
    - Call `list_beads` MCP tool to verify the MCP connection works
