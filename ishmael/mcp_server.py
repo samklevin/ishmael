@@ -63,6 +63,7 @@ def create_bead(
     branch: str,
     description: str,
     priority: int = 2,
+    blocked_by: str = "",
 ) -> str:
     """Create a bead and an isolated git worktree for an agent to work in.
 
@@ -72,6 +73,7 @@ def create_bead(
         branch: Branch to base the worktree on.
         description: What the agent should do.
         priority: 0 (lowest) to 4 (highest), default 2.
+        blocked_by: Comma-separated bead IDs that must close before this bead becomes ready.
     """
 
     # -- Validate inputs ---------------------------------------------------
@@ -140,15 +142,33 @@ def create_bead(
     if upd.returncode != 0:
         logger.warning("Failed to update bead metadata: %s", upd.stderr)
 
-    return (
+    # -- Wire up dependencies (blocked_by) ---------------------------------
+    dep_errors: list[str] = []
+    blocker_ids: list[str] = []
+    if blocked_by:
+        for raw_id in blocked_by.split(","):
+            blocker = raw_id.strip()
+            if not blocker:
+                continue
+            blocker_ids.append(blocker)
+            dep_result = _run_bd("dep", "add", bead_id, blocker)
+            if dep_result.returncode != 0:
+                dep_errors.append(f"  dep {blocker}: {dep_result.stderr.strip()}")
+
+    summary = (
         f"Bead created.\n"
-        f"  id:       {bead_id}\n"
-        f"  title:    {title}\n"
-        f"  repo:     {repo_path}\n"
-        f"  branch:   {branch}\n"
-        f"  worktree: {wt_dir}\n"
-        f"  priority: {priority}"
+        f"  id:         {bead_id}\n"
+        f"  title:      {title}\n"
+        f"  repo:       {repo_path}\n"
+        f"  branch:     {branch}\n"
+        f"  worktree:   {wt_dir}\n"
+        f"  priority:   {priority}"
     )
+    if blocker_ids:
+        summary += f"\n  blocked_by: {', '.join(blocker_ids)}"
+    if dep_errors:
+        summary += "\n  dep errors:\n" + "\n".join(dep_errors)
+    return summary
 
 
 @mcp.tool()
@@ -316,6 +336,81 @@ def update_bead(
 
 
 @mcp.tool()
+def retry_bead(bead_id: str) -> str:
+    """Close a stuck/failed bead and recreate it with the same title, description, and priority.
+
+    Cleans up the old worktree (if any) and creates a fresh one. Use this when
+    an agent failed and you want to re-queue the work.
+
+    Args:
+        bead_id: The bead ID to retry (e.g. "samuellevin-82u").
+    """
+    if not bead_id or not bead_id.strip():
+        return "Error: bead_id must be a non-empty string."
+
+    # Fetch the original bead
+    result = _run_bd("show", bead_id, "--json")
+    if result.returncode != 0:
+        return f"Error fetching bead: {result.stderr.strip()}"
+
+    try:
+        bead = json.loads(result.stdout)
+        if isinstance(bead, list):
+            bead = bead[0]
+    except (json.JSONDecodeError, IndexError) as exc:
+        return f"Error parsing bead: {exc}"
+
+    title = bead.get("title", "")
+    description = bead.get("description", "")
+    priority = bead.get("priority", 2)
+
+    meta = bead.get("metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except json.JSONDecodeError:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+
+    repo = meta.get("repo", "")
+    branch = meta.get("branch", "main")
+    old_worktree = meta.get("worktree", "")
+
+    if not repo:
+        return f"Error: bead {bead_id} has no repo in metadata, cannot retry."
+
+    # Close the old bead
+    close_result = _run_bd("close", bead_id, "--reason", "Retrying — closed for re-creation")
+    if close_result.returncode != 0:
+        # May already be closed
+        logger.warning("Failed to close %s: %s", bead_id, close_result.stderr)
+
+    # Clean up old worktree
+    if old_worktree:
+        wt_path = Path(old_worktree)
+        if wt_path.is_dir():
+            try:
+                subprocess.run(
+                    ["git", "worktree", "remove", "--force", str(wt_path)],
+                    cwd=repo,
+                    capture_output=True,
+                    text=True,
+                )
+            except Exception as exc:
+                logger.warning("Failed to remove old worktree %s: %s", wt_path, exc)
+
+    # Create new bead via the existing create_bead tool
+    return create_bead(
+        title=title,
+        repo=repo,
+        branch=branch,
+        description=description,
+        priority=priority,
+    )
+
+
+@mcp.tool()
 def list_active_agents() -> str:
     """List beads currently being worked on by agents (status=in_progress).
 
@@ -357,6 +452,148 @@ def list_active_agents() -> str:
         })
 
     return json.dumps(summaries, indent=2)
+
+
+@mcp.tool()
+def list_templates() -> str:
+    """List available workflow templates from ~/.ishmael/templates/.
+
+    Returns template names, descriptions, parameters, and step chains.
+    """
+    from .config import Config
+    from .templates import list_templates as _list_templates
+
+    config = Config()
+    templates = _list_templates(config.templates_dir)
+    if not templates:
+        return f"No templates found in {config.templates_dir}"
+
+    result = []
+    for t in templates:
+        result.append({
+            "name": t.name,
+            "description": t.description,
+            "params": {k: v.get("description", "") for k, v in t.params.items()},
+            "steps": [
+                {"id": s.id, "title": s.title, "type": s.type, "blocked_by": s.blocked_by}
+                for s in t.steps
+            ],
+        })
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def instantiate_workflow(
+    template_name: str,
+    repo: str,
+    branch: str,
+    params: str = "",
+) -> str:
+    """Instantiate a workflow template, creating beads with dependencies.
+
+    Args:
+        template_name: Name of the template (filename without .yaml).
+        repo: Absolute path to the git repository.
+        branch: Branch to base worktrees on.
+        params: JSON string of template parameters, e.g. '{"story_id": "2-1"}'.
+    """
+    from .config import Config
+    from .templates import get_template, instantiate_workflow as _instantiate
+
+    config = Config()
+    template = get_template(template_name, config.templates_dir)
+    if not template:
+        return f"Error: template '{template_name}' not found in {config.templates_dir}"
+
+    parsed_params: dict[str, str] = {}
+    if params:
+        try:
+            parsed_params = json.loads(params)
+        except json.JSONDecodeError:
+            return "Error: params must be a valid JSON string."
+
+    # Validate required params
+    missing = [k for k in template.params if k not in parsed_params]
+    if missing:
+        return f"Error: missing required params: {', '.join(missing)}"
+
+    results = _instantiate(
+        template=template,
+        params=parsed_params,
+        repo=repo,
+        branch=branch,
+    )
+
+    return json.dumps(results, indent=2)
+
+
+@mcp.tool()
+def add_dependency(bead_id: str, depends_on: str) -> str:
+    """Add a dependency so that bead_id is blocked by depends_on.
+
+    The bead will not appear in ``bd ready`` until depends_on is closed.
+
+    Args:
+        bead_id: The bead that should wait.
+        depends_on: The bead that must complete first.
+    """
+    if not bead_id or not bead_id.strip():
+        return "Error: bead_id must be a non-empty string."
+    if not depends_on or not depends_on.strip():
+        return "Error: depends_on must be a non-empty string."
+
+    result = _run_bd("dep", "add", bead_id.strip(), depends_on.strip())
+    if result.returncode != 0:
+        return f"Error: {result.stderr.strip()}"
+    return f"Dependency added: {bead_id} is now blocked by {depends_on}."
+
+
+@mcp.tool()
+def remove_dependency(bead_id: str, depends_on: str) -> str:
+    """Remove a dependency so that bead_id is no longer blocked by depends_on.
+
+    Args:
+        bead_id: The bead to unblock.
+        depends_on: The blocker to remove.
+    """
+    if not bead_id or not bead_id.strip():
+        return "Error: bead_id must be a non-empty string."
+    if not depends_on or not depends_on.strip():
+        return "Error: depends_on must be a non-empty string."
+
+    result = _run_bd("dep", "remove", bead_id.strip(), depends_on.strip())
+    if result.returncode != 0:
+        return f"Error: {result.stderr.strip()}"
+    return f"Dependency removed: {bead_id} is no longer blocked by {depends_on}."
+
+
+@mcp.tool()
+def list_dependencies(bead_id: str) -> str:
+    """List what blocks a bead (its dependencies).
+
+    Args:
+        bead_id: The bead to query.
+    """
+    if not bead_id or not bead_id.strip():
+        return "Error: bead_id must be a non-empty string."
+
+    result = _run_bd("dep", "list", bead_id.strip(), "--json")
+    if result.returncode != 0:
+        return f"Error: {result.stderr.strip()}"
+
+    output = result.stdout.strip()
+    if not output:
+        return f"No dependencies for {bead_id}."
+
+    try:
+        deps = json.loads(output)
+    except json.JSONDecodeError:
+        return f"Dependencies for {bead_id}:\n{output}"
+
+    if not deps:
+        return f"No dependencies for {bead_id}."
+
+    return json.dumps(deps, indent=2)
 
 
 # ---------------------------------------------------------------------------

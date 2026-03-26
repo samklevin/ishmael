@@ -4,24 +4,26 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from . import agent as agent_mod
+from . import tmux as tmux_mod
 from . import worktree
 from .agent import Agent, AgentState
 from .config import Config
 
 logger = logging.getLogger(__name__)
 
-# Callback type aliases
-EventCallback = Callable[..., Any]
-
 
 class Orchestrator:
+    STATUS_DIR = os.path.expanduser("~/.ishmael")
+
     def __init__(self, config: Config) -> None:
         self.config = config
         self.agents: list[Agent] = []
@@ -29,11 +31,8 @@ class Orchestrator:
         self.completed_count = 0
         self.failed_count = 0
 
-        # Callbacks (set by TUI or other consumers)
-        self.on_agent_started: Optional[EventCallback] = None
-        self.on_agent_completed: Optional[EventCallback] = None
-        self.on_agent_failed: Optional[EventCallback] = None
-        self.on_state_changed: Optional[EventCallback] = None
+        os.makedirs(self.STATUS_DIR, exist_ok=True)
+        self._reconnect()
 
     def _bd(self, *args: str) -> subprocess.CompletedProcess:
         """Run a bd command and return the result."""
@@ -43,6 +42,23 @@ class Orchestrator:
             capture_output=True,
             text=True,
         )
+
+    def _reconnect(self) -> None:
+        """Reconnect to any live worker processes from a previous session."""
+        recovered = agent_mod.reconnect_agents(self.config.workers_dir)
+        for ag in recovered:
+            if ag.state == AgentState.RUNNING:
+                if ag.pid and agent_mod._is_ishmael_worker(ag.pid):
+                    ag._tmux_session = self.config.tmux_session
+                    with self._agents_lock:
+                        self.agents.append(ag)
+                    logger.info("Reconnected to live worker for %s (pid %d)", ag.bead_id, ag.pid)
+                else:
+                    logger.warning("Orphaned worker for %s (pid dead), resetting bead", ag.bead_id)
+                    self._bd("update", ag.bead_id, "--status", "open")
+                    agent_mod.cleanup_worker_dir(ag.bead_id, self.config.workers_dir)
+            else:
+                agent_mod.cleanup_worker_dir(ag.bead_id, self.config.workers_dir)
 
     def get_ready_beads(self) -> list[dict]:
         """Fetch ready beads from bd."""
@@ -82,6 +98,11 @@ class Orchestrator:
                 return {}
         return meta
 
+    def _is_manual_bead(self, bead: dict) -> bool:
+        """Check if a bead is a manual (human) bead."""
+        meta = self._get_bead_metadata(bead)
+        return meta.get("type") == "manual"
+
     def _resolve_workdir(self, bead: dict) -> tuple[Path | None, Path | None]:
         """Determine worktree path and cwd for an agent.
 
@@ -90,7 +111,6 @@ class Orchestrator:
         """
         meta = self._get_bead_metadata(bead)
 
-        # If the bead specifies a pre-existing worktree, verify it exists
         if wt := meta.get("worktree"):
             wt_path = Path(wt)
             if wt_path.is_dir():
@@ -99,7 +119,6 @@ class Orchestrator:
                 "Bead %s has worktree metadata but path missing: %s",
                 bead["id"], wt,
             )
-            # Fall through to create a new one
 
         repo = meta.get("repo")
         if not repo:
@@ -112,12 +131,29 @@ class Orchestrator:
             return wt_path, wt_path
         except subprocess.CalledProcessError as e:
             logger.error("Failed to create worktree for %s: %s", bead["id"], e.stderr)
-            # Fall back to repo directly
             return None, Path(repo)
 
     def assign_bead(self, bead: dict) -> Agent | None:
-        """Claim a bead, create worktree, and spawn an agent."""
+        """Claim a bead, create worktree, and spawn an agent.
+
+        Manual beads get a placeholder tmux window instead of a worker.
+        """
         bead_id = bead["id"]
+
+        if self._is_manual_bead(bead):
+            if not self.claim_bead(bead_id):
+                return None
+            # Create a placeholder tmux window with a waiting message
+            desc = bead.get("description", "")
+            msg = f"echo 'Waiting for human — run: ishmael board {bead_id}'; echo '{desc}'; read -r -p \"Press Enter to dismiss...\" _"
+            tmux_mod.create_window(
+                session=self.config.tmux_session,
+                name=bead_id,
+                command=f"bash -c {_shell_quote(msg)}",
+            )
+            logger.info("Manual bead %s: placeholder window created", bead_id)
+            return None
+
         if not self.claim_bead(bead_id):
             return None
 
@@ -125,18 +161,16 @@ class Orchestrator:
         if cwd is None:
             return None
 
-        meta = self._get_bead_metadata(bead)
-        repo = meta.get("repo")
-
-        # Spawn the agent
-        ag = agent_mod.run_agent(bead, worktree_path, cwd)
-        ag.repo_path = Path(repo) if repo else None
+        ag = agent_mod.spawn_agent(
+            bead, worktree_path, cwd,
+            beads_dir=self.config.beads_dir,
+            workers_dir=self.config.workers_dir,
+            tmux_session=self.config.tmux_session,
+        )
         with self._agents_lock:
             self.agents.append(ag)
 
         logger.info("Assigned bead %s to agent", bead_id)
-        if self.on_agent_started:
-            self.on_agent_started(bead_id)
         return ag
 
     def get_agent(self, bead_id: str) -> Agent | None:
@@ -149,43 +183,56 @@ class Orchestrator:
 
     def poll_agents(self) -> None:
         """Check all running agents for completion."""
+        with self._agents_lock:
+            snapshot = list(self.agents)
+
         still_running = []
-        for ag in self.agents:
+        for ag in snapshot:
             state = agent_mod.poll_agent(ag)
 
             if state == AgentState.RUNNING:
                 still_running.append(ag)
                 continue
 
-            # Agent finished
+            if state == AgentState.KILLED and ag.pid and agent_mod._pid_alive(ag.pid):
+                still_running.append(ag)
+                continue
+
             if state == AgentState.COMPLETED:
-                reason = f"Completed by agent. Output: {ag.output[:500]}"
-                self.close_bead(ag.bead_id, reason)
                 self.completed_count += 1
                 logger.info("Agent for %s completed", ag.bead_id)
-                if self.on_agent_completed:
-                    self.on_agent_completed(ag.bead_id, ag.output)
+            elif state == AgentState.KILLED:
+                logger.info("Agent for %s was killed", ag.bead_id)
             else:
-                reason = f"Agent failed. Error: {ag.error[:500]}"
-                self._bd("note", ag.bead_id, "--", reason)
-                self.failed_count += 1
-                logger.warning("Agent for %s failed: %s", ag.bead_id, ag.error[:200])
-                if self.on_agent_failed:
-                    self.on_agent_failed(ag.bead_id, ag.error)
+                from .worker import read_meta, worker_dir
+                wdir = worker_dir(ag.bead_id, self.config.workers_dir)
+                meta = read_meta(wdir)
+                if meta.get("status") == "running":
+                    self._bd("update", ag.bead_id, "--status", "open")
+                    logger.warning("Agent for %s crashed, resetting bead", ag.bead_id)
+                else:
+                    self.failed_count += 1
+                    logger.warning("Agent for %s failed", ag.bead_id)
 
-            # Cleanup worktree
-            if ag.worktree_path and ag.repo_path:
-                try:
-                    worktree.remove_worktree(
-                        ag.repo_path, ag.worktree_path
-                    )
-                except subprocess.CalledProcessError:
-                    logger.warning(
-                        "Failed to remove worktree %s", ag.worktree_path
-                    )
+            agent_mod.cleanup_worker_dir(ag.bead_id, self.config.workers_dir)
 
         with self._agents_lock:
-            self.agents = still_running
+            newly_added = [a for a in self.agents if a not in snapshot]
+            self.agents = still_running + newly_added
+
+    def kill_agent(self, bead_id: str) -> bool:
+        """Kill a running agent's worker process."""
+        ag = self.get_agent(bead_id)
+        if ag is None:
+            return False
+        agent_mod.kill_agent(ag)
+        logger.info("Killed agent for %s", bead_id)
+        return True
+
+    def close_bead_and_kill(self, bead_id: str, reason: str) -> None:
+        """Kill the agent (if running) and close the bead."""
+        self.kill_agent(bead_id)
+        self.close_bead(bead_id, reason)
 
     def get_all_beads(self) -> list[dict]:
         """Fetch all non-closed beads from bd."""
@@ -199,60 +246,132 @@ class Orchestrator:
             logger.error("Failed to parse bd list output: %s", result.stdout)
             return []
 
-    def dashboard_state(self, beads: list[dict] | None = None) -> dict:
-        """Build state dict for the dashboard."""
-        return {
-            "active": len(self.agents),
-            "max": self.config.max_agents,
-            "ready": "?",  # Updated each cycle
-            "completed": self.completed_count,
-            "failed": self.failed_count,
-            "agents": [
-                {"bead_id": a.bead_id, "state": a.state.value}
-                for a in self.agents
-            ],
-            "beads": beads or [],
-        }
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        """Format elapsed seconds as e.g. '5m 23s' or '1h 02m'."""
+        s = int(seconds)
+        if s < 60:
+            return f"{s}s"
+        m, sec = divmod(s, 60)
+        if m < 60:
+            return f"{m}m {sec:02d}s"
+        h, m = divmod(m, 60)
+        return f"{h}h {m:02d}m"
 
-    def poll_once(self) -> dict:
-        """Run a single poll cycle. Returns dashboard state dict."""
-        # Poll existing agents
+    def _write_status_files(self) -> None:
+        """Write bead-list.txt and agent-status.txt for the dashboard panes."""
+        now = time.time()
+
+        # --- bead list ---
+        beads = self.get_all_beads()
+        lines = [f"{'ID':<16} {'Title':<30} {'Status':<12} {'Pri'}"]
+        lines.append("-" * 63)
+        for b in beads:
+            lines.append(
+                f"{b.get('id', '?'):<16} "
+                f"{(b.get('title', '') or '')[:30]:<30} "
+                f"{b.get('status', '?'):<12} "
+                f"{b.get('priority', '?')}"
+            )
+        if not beads:
+            lines.append("(no beads)")
+        self._atomic_write(
+            os.path.join(self.STATUS_DIR, "bead-list.txt"),
+            "\n".join(lines) + "\n",
+        )
+
+        # --- agent status ---
+        with self._agents_lock:
+            agents_snapshot = list(self.agents)
+        header = (
+            f"Agents: {len(agents_snapshot)}/{self.config.max_agents} | "
+            f"Done: {self.completed_count} | Failed: {self.failed_count}"
+        )
+        alines = [header, ""]
+        if agents_snapshot:
+            alines.append(f"{'ID':<16} {'Title':<30} {'Elapsed'}")
+            alines.append("-" * 55)
+            for ag in agents_snapshot:
+                elapsed = self._format_elapsed(now - ag.started_at) if ag.started_at else "?"
+                title = (ag.title or "")[:30]
+                alines.append(f"{ag.bead_id:<16} {title:<30} {elapsed}")
+        else:
+            alines.append("(no running agents)")
+        self._atomic_write(
+            os.path.join(self.STATUS_DIR, "agent-status.txt"),
+            "\n".join(alines) + "\n",
+        )
+
+    @staticmethod
+    def _atomic_write(path: str, content: str) -> None:
+        """Write content to path atomically via tmp+rename."""
+        dir_ = os.path.dirname(path)
+        fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+        try:
+            os.write(fd, content.encode())
+            os.close(fd)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _print_status(self, ready_count: int) -> None:
+        """Print a status line to stdout (visible in tmux window 0)."""
+        agents_str = ", ".join(
+            f"{a.bead_id}({a.state.value})" for a in self.agents
+        ) or "none"
+        print(
+            f"[ishmael] agents={len(self.agents)}/{self.config.max_agents} "
+            f"ready={ready_count} done={self.completed_count} "
+            f"failed={self.failed_count} | {agents_str}",
+            flush=True,
+        )
+
+    def poll_once(self) -> None:
+        """Run a single poll cycle."""
         self.poll_agents()
 
-        # Fetch all beads for the dashboard
-        all_beads = self.get_all_beads()
-
-        # Fetch and assign new beads if we have capacity
         slots = self.config.max_agents - len(self.agents)
+        ready_count = 0
         if slots > 0:
             ready = self.get_ready_beads()
-            state = self.dashboard_state(beads=all_beads)
-            state["ready"] = len(ready)
-
+            ready_count = len(ready)
             for bead in ready[:slots]:
                 self.assign_bead(bead)
         else:
-            state = self.dashboard_state(beads=all_beads)
+            ready = self.get_ready_beads()
+            ready_count = len(ready)
 
-        if self.on_state_changed:
-            self.on_state_changed(state)
-
-        return state
+        self._print_status(ready_count)
+        self._write_status_files()
 
     def shutdown(self) -> None:
-        """Kill any remaining agent processes."""
+        """Kill all workers on exit."""
+        logger.info("Shutting down; killing %d worker(s)", len(self.agents))
         for ag in self.agents:
-            if ag.process.poll() is None:
-                ag.process.terminate()
+            agent_mod.kill_agent(ag)
 
     def run(self) -> None:
-        """Main orchestrator loop (for headless/non-TUI use)."""
+        """Main orchestrator loop — prints status to stdout."""
         logger.info("Starting Ishmael orchestrator")
+        print("[ishmael] Orchestrator started. Ctrl+C to stop.", flush=True)
         try:
             while True:
                 self.poll_once()
                 time.sleep(self.config.poll_interval)
         except KeyboardInterrupt:
-            logger.info("Shutting down orchestrator")
+            print("\n[ishmael] Shutting down...", flush=True)
         finally:
             self.shutdown()
+
+
+def _shell_quote(s: str) -> str:
+    """Single-quote a string for shell use."""
+    return "'" + s.replace("'", "'\\''") + "'"

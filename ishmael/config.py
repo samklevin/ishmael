@@ -14,6 +14,9 @@ class Config:
     max_agents: int = 3
     poll_interval: float = 5.0
     beads_dir: Optional[str] = None
+    workers_dir: str = os.path.expanduser("~/.ishmael/workers")
+    tmux_session: str = "ishmael"
+    templates_dir: str = os.path.expanduser("~/.ishmael/templates")
 
     def bd_env(self) -> dict[str, str]:
         """Return environment variables for bd commands."""

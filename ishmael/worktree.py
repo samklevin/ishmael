@@ -7,18 +7,33 @@ from pathlib import Path
 from typing import Union
 
 
+def _ref_exists(repo: Path, ref: str) -> bool:
+    """Check if a git ref (branch, tag, commit) exists."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def create_worktree(repo_path: Union[str, Path], branch: str, worktree_name: str) -> Path:
     """Create a git worktree and return its path.
 
     Worktrees are created under <repo>/.worktrees/<worktree_name>/.
+    If ``branch`` does not exist as a ref, the worktree is based off HEAD.
     """
     repo = Path(repo_path).resolve()
     worktree_dir = repo / ".worktrees" / worktree_name
     worktree_dir.parent.mkdir(parents=True, exist_ok=True)
 
+    # Determine the base ref: use branch if it exists, otherwise HEAD
+    base_ref = branch if _ref_exists(repo, branch) else "HEAD"
+
     worktree_branch = f"{worktree_name}/{branch}"
     subprocess.run(
-        ["git", "worktree", "add", "-b", worktree_branch, str(worktree_dir), branch],
+        ["git", "worktree", "add", "-b", worktree_branch, str(worktree_dir), base_ref],
         cwd=repo,
         check=True,
         capture_output=True,
