@@ -32,5 +32,8 @@ Create a bead (task) that the ishmael orchestrator will assign to a Claude Code 
    - `branch`: branch name
    - `description`: agent-oriented instructions
    - `priority`: 0-4
+   - `worktree` (optional): path to an existing worktree to reuse. Use this when
+     creating a bead that should share a worktree with another bead (e.g. dependent
+     tasks in a chain). If not provided, a fresh worktree is created.
 
-7. **Report**: Show the user the bead ID and a summary of what was created.
+7. **Report**: Show the user the bead ID, worktree path, and a summary of what was created.

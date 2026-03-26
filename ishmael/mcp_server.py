@@ -16,6 +16,8 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from .worktree import WORKTREE_BASE
+
 # ---------------------------------------------------------------------------
 # Logging → stderr (stdout is the MCP stdio transport)
 # ---------------------------------------------------------------------------
@@ -29,8 +31,6 @@ logger = logging.getLogger("ishmael.mcp")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-WORKTREE_BASE = Path.home() / ".worktrees"
 
 
 def _bd_env() -> dict[str, str]:
@@ -64,6 +64,7 @@ def create_bead(
     description: str,
     priority: int = 2,
     blocked_by: str = "",
+    worktree: str = "",
 ) -> str:
     """Create a bead and an isolated git worktree for an agent to work in.
 
@@ -74,6 +75,9 @@ def create_bead(
         description: What the agent should do.
         priority: 0 (lowest) to 4 (highest), default 2.
         blocked_by: Comma-separated bead IDs that must close before this bead becomes ready.
+        worktree: Optional path to an existing worktree to reuse. When creating
+            a chain of dependent beads, pass the worktree from the first bead so
+            all beads in the chain share the same working directory.
     """
 
     # -- Validate inputs ---------------------------------------------------
@@ -114,27 +118,31 @@ def create_bead(
     except (json.JSONDecodeError, KeyError) as exc:
         return f"Error parsing bd output: {exc}\nRaw output: {result.stdout}"
 
-    # -- Create worktree ---------------------------------------------------
-    repo_name = repo_path.name
-    wt_dir = WORKTREE_BASE / f"{repo_name}-{bead_id}"
+    # -- Create or reuse worktree ------------------------------------------
+    if worktree:
+        wt_dir = Path(worktree).expanduser().resolve()
+    else:
+        repo_name = repo_path.name
+        wt_dir = WORKTREE_BASE / f"{repo_name}-{bead_id}"
 
-    try:
-        WORKTREE_BASE.mkdir(parents=True, exist_ok=True)
-        worktree_branch = f"{bead_id}/{branch}"
-        subprocess.run(
-            ["git", "worktree", "add", "-b", worktree_branch, str(wt_dir), branch],
-            cwd=repo_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        # Bead exists but worktree failed — leave a note so operators can see
-        _run_bd("note", bead_id, "--", f"Worktree creation failed: {exc.stderr.strip()}")
-        return (
-            f"Error: bead {bead_id} created but worktree failed.\n"
-            f"git stderr: {exc.stderr.strip()}"
-        )
+    if not wt_dir.is_dir():
+        try:
+            wt_dir.parent.mkdir(parents=True, exist_ok=True)
+            worktree_branch = f"{bead_id}/{branch}"
+            subprocess.run(
+                ["git", "worktree", "add", "-b", worktree_branch, str(wt_dir), branch],
+                cwd=repo_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            # Bead exists but worktree failed — leave a note so operators can see
+            _run_bd("note", bead_id, "--", f"Worktree creation failed: {exc.stderr.strip()}")
+            return (
+                f"Error: bead {bead_id} created but worktree failed.\n"
+                f"git stderr: {exc.stderr.strip()}"
+            )
 
     # -- Update bead metadata with worktree path ---------------------------
     metadata["worktree"] = str(wt_dir)

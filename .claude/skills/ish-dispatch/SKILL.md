@@ -27,15 +27,17 @@ Convert a plan from the current conversation into a chain of beads with dependen
    - Any constraints or patterns to follow
    - The agent has NO conversation context — the description must stand alone
 
-5. **Create beads in dependency order**: For each task:
-   - Call `create_bead` with title, repo, branch, description, and priority
-   - Note the returned bead ID
+5. **Create the first bead**: Call `create_bead` with title, repo, branch, description, and priority. Note the returned bead ID **and worktree path** from the response.
 
-6. **Wire dependencies**: For tasks that depend on earlier tasks, call `add_dependency` with:
-   - `bead_id`: the dependent bead
-   - `depends_on`: the bead it must wait for
+6. **Create remaining beads sharing the same worktree**: For all subsequent beads in the chain, pass the `worktree` parameter set to the worktree path from step 5. This ensures all beads in the chain work on the same code, so later beads see changes made by earlier ones.
+
+   For each bead:
+   - Call `create_bead` with title, repo, branch, description, priority, **and `worktree`**
+   - Pass `blocked_by` with comma-separated IDs of beads this task depends on
+   - Note the returned bead ID
 
 7. **Report**: Show the full chain with:
    - Each bead's ID, title, and what it's blocked by
+   - The shared worktree path
    - A visual dependency graph (simple text format)
    - Total number of beads created
