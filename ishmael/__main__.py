@@ -143,6 +143,36 @@ def cmd_add(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_setup_skills(args: argparse.Namespace) -> None:
+    """Symlink ishmael skills into ~/.claude/skills/ for global availability."""
+    from pathlib import Path
+
+    # Skills live alongside this package in the repo
+    repo_root = Path(__file__).resolve().parent.parent
+    src_skills = repo_root / ".claude" / "skills"
+    dst_skills = Path.home() / ".claude" / "skills"
+
+    if not src_skills.is_dir():
+        print(f"Skills directory not found: {src_skills}", file=sys.stderr)
+        sys.exit(1)
+
+    dst_skills.mkdir(parents=True, exist_ok=True)
+
+    for skill_dir in sorted(src_skills.iterdir()):
+        if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").exists():
+            continue
+        link = dst_skills / skill_dir.name
+        if link.is_symlink():
+            link.unlink()
+        elif link.exists():
+            print(f"  skip {skill_dir.name} (already exists and is not a symlink)")
+            continue
+        link.symlink_to(skill_dir)
+        print(f"  {skill_dir.name} -> {skill_dir}")
+
+    print("Done. Skills are now available globally in Claude Code.")
+
+
 def cmd_workflow_list(args: argparse.Namespace) -> None:
     """List available workflow templates."""
     from .templates import list_templates
@@ -239,6 +269,9 @@ def main() -> None:
     p_add.add_argument("-p", "--priority", type=int, default=2)
     p_add.add_argument("-d", "--description", default=None)
 
+    # setup-skills
+    sub.add_parser("setup-skills", help="Symlink ishmael skills into ~/.claude/skills/")
+
     # workflow
     p_wf = sub.add_parser("workflow", help="Workflow template commands")
     wf_sub = p_wf.add_subparsers(dest="wf_command", required=True)
@@ -265,6 +298,8 @@ def main() -> None:
         cmd_status(args)
     elif args.command == "add":
         cmd_add(args)
+    elif args.command == "setup-skills":
+        cmd_setup_skills(args)
     elif args.command == "workflow":
         if args.wf_command == "list":
             cmd_workflow_list(args)
