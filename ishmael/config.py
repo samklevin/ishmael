@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+
+# Default tools available to worker agents
+DEFAULT_ALLOWED_TOOLS = [
+    "Read", "Write", "Edit", "Bash", "Glob", "Grep",
+    "Task", "WebSearch", "WebFetch",
+]
 
 
 @dataclass
@@ -17,6 +24,12 @@ class Config:
     workers_dir: str = os.path.expanduser("~/.ishmael/workers")
     tmux_session: str = "ishmael"
     templates_dir: str = os.path.expanduser("~/.ishmael/templates")
+
+    # SDK worker defaults (worker currently hardcodes these; will read from
+    # config once we add config-file support to the worker CLI)
+    max_turns: int = 50
+    permission_mode: str = "bypassPermissions"
+    allowed_tools: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_TOOLS))
 
     def bd_env(self) -> dict[str, str]:
         """Return environment variables for bd commands."""

@@ -1,5 +1,5 @@
 ---
-name: ish-create
+name: ish:create
 description: Use when the user wants to create a task/bead for ishmael agents to work on
 disable-model-invocation: true
 ---

@@ -1,5 +1,5 @@
 ---
-name: ish-board
+name: ish:board
 description: Use when the user wants to see running ishmael agents or jump into an agent's session
 disable-model-invocation: true
 ---

@@ -1,5 +1,5 @@
 ---
-name: ish-dispatch
+name: ish:dispatch
 description: Use when the user wants to dispatch/execute a plan by creating beads with dependencies for ishmael agents
 disable-model-invocation: true
 ---

@@ -1,5 +1,5 @@
 ---
-name: ish-retry
+name: ish:retry
 description: Use when the user wants to retry a failed ishmael bead/task
 disable-model-invocation: true
 ---

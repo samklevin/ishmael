@@ -1,5 +1,5 @@
 ---
-name: ish-status
+name: ish:status
 description: Use when the user wants to see the status of ishmael beads or running agents
 disable-model-invocation: true
 ---

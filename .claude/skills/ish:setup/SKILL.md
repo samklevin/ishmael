@@ -1,5 +1,5 @@
 ---
-name: ish-setup
+name: ish:setup
 description: Use when the user wants to set up ishmael on a new machine or check their installation
 disable-model-invocation: true
 ---
@@ -34,7 +34,7 @@ Walk through setting up ishmael on this machine. Check what's installed and guid
 
 4. **Install skills and MCP server**:
    - Run `ishmael setup` — this does two things:
-     - Symlinks the `/ish-*` slash commands into `~/.claude/skills/` (available in any repo)
+     - Symlinks the `/ish:*` slash commands into `~/.claude/skills/` (available in any repo)
      - Configures the `ishmael-mcp` MCP server at the user level with `BEADS_DIR=~/.beads`
    - If it reports errors (e.g. `claude` or `ishmael-mcp` not on PATH), help the user fix them
 

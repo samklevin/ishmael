@@ -1,5 +1,5 @@
 ---
-name: ish-plan
+name: ish:plan
 description: Use when the user wants to break down a high-level goal into tasks for ishmael agents
 disable-model-invocation: true
 ---
