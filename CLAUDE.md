@@ -30,7 +30,25 @@ ishmael board <bead-id>        # Jump to agent window or resume in worktree
 ishmael status                 # Show bd status
 ishmael workflow list          # List workflow templates
 ishmael workflow run <name> --repo . --param key=value
+ishmael setup                  # Install skills globally and configure MCP server
 ```
+
+## Slash Commands (Skills)
+
+These are available in any Claude Code session after running `ishmael setup`:
+
+| Skill | What it does |
+|-------|-------------|
+| `/ish:create` | Create a single bead for agents to work on |
+| `/ish:plan` | Break down a goal into tasks (planning only, no beads created) |
+| `/ish:dispatch` | Convert a plan into a chain of beads with dependencies |
+| `/ish:dispatch-workflow` | List and run a workflow template to create bead chains |
+| `/ish:status` | Show all beads and running agents |
+| `/ish:board` | Show running agents and how to jump into their sessions |
+| `/ish:retry` | Retry a failed bead |
+| `/ish:templates` | Learn about, create, or manage workflow templates |
+| `/ish:setup` | Set up ishmael on a new machine |
+| `/ish:help` | Overview of ishmael commands, tools, and skills |
 
 ## MCP Tools (available to Claude Code instances)
 
@@ -92,7 +110,7 @@ ishmael/
 ├── _orchestrator_main.py  # Runs inside tmux window 0 (dashboard + poll loop)
 ├── orchestrator.py        # Core orchestrator logic (poll, assign, monitor)
 ├── agent.py               # Agent lifecycle (spawn, poll, kill, reconnect)
-├── worker.py              # Detached worker process (runs claude CLI for one bead)
+├── worker.py              # Detached worker process (runs claude agent SDK for one bead)
 ├── tmux.py                # Stateless tmux CLI wrapper
 ├── worktree.py            # Git worktree creation/cleanup
 ├── config.py              # Configuration dataclass

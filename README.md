@@ -85,7 +85,27 @@ ishmael status
 # Run a workflow template
 ishmael workflow list
 ishmael workflow run story --repo /path/to/project --param story_id=2-1
+
+# Install skills + MCP server globally
+ishmael setup
 ```
+
+## Slash Commands
+
+After running `ishmael setup`, these skills are available in any Claude Code session:
+
+| Command | What it does |
+|---------|-------------|
+| `/ish:create` | Create a bead for agents to work on |
+| `/ish:plan` | Break down a goal into tasks |
+| `/ish:dispatch` | Convert a plan into bead chains |
+| `/ish:dispatch-workflow` | Run a workflow template |
+| `/ish:status` | Show beads and running agents |
+| `/ish:board` | Show running agents |
+| `/ish:retry` | Retry a failed bead |
+| `/ish:templates` | Manage workflow templates |
+| `/ish:setup` | Set up ishmael |
+| `/ish:help` | Overview of all commands and tools |
 
 ## How It Works
 

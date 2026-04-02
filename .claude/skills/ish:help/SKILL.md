@@ -27,6 +27,7 @@ Give the user a quick overview of ishmael and point them to the right skill or c
    | `/ish:board` | Show running agents and how to jump into their sessions |
    | `/ish:retry` | Retry a failed bead |
    | `/ish:templates` | Learn about, create, or manage workflow templates |
+   | `/ish:dispatch-workflow` | List and run a workflow template to create bead chains |
    | `/ish:setup` | Set up ishmael on a new machine |
    | `/ish:help` | This help overview |
 
