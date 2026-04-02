@@ -102,8 +102,13 @@ async def _run_sdk(
         SystemMessage,
     )
 
-    # Build MCP server config for ishmael-mcp if available
-    mcp_servers: dict[str, Any] = {}
+    # Inherit MCP servers from user's ~/.claude.json
+    from .config import load_user_mcp_servers, DEFAULT_ALLOWED_TOOLS
+    mcp_servers = load_user_mcp_servers()
+    logger.info("Inherited %d MCP server(s) from user config: %s",
+                len(mcp_servers), list(mcp_servers.keys()))
+
+    # Ensure ishmael-mcp is always present (overrides any user-defined "ishmael" key)
     ishmael_mcp_path = shutil.which("ishmael-mcp")
     if ishmael_mcp_path:
         mcp_env: dict[str, str] = {}
@@ -119,10 +124,15 @@ async def _run_sdk(
     else:
         logger.info("ishmael-mcp not found on PATH; agents won't have MCP tools")
 
+    # Build allowed_tools: base tools + mcp__<server>__ prefix for each server
+    allowed_tools = list(DEFAULT_ALLOWED_TOOLS)
+    for server_name in mcp_servers:
+        allowed_tools.append(f"mcp__{server_name}")
+    logger.info("Allowed tools: %s", allowed_tools)
+
     options = ClaudeAgentOptions(
         cwd=cwd,
-        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep",
-                        "Task", "WebSearch", "WebFetch"],
+        allowed_tools=allowed_tools,
         permission_mode="bypassPermissions",
         allow_dangerously_skip_permissions=True,
         max_turns=50,

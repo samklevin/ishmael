@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Default tools available to worker agents
@@ -39,3 +44,19 @@ class Config:
         elif "BEADS_DIR" not in env:
             env["BEADS_DIR"] = os.path.expanduser("~/.beads")
         return env
+
+
+def load_user_mcp_servers() -> dict[str, Any]:
+    """Load MCP server configs from the user's ~/.claude.json."""
+    config_path = Path.home() / ".claude.json"
+    try:
+        data = json.loads(config_path.read_text())
+        servers = data.get("mcpServers", {})
+        if not isinstance(servers, dict):
+            return {}
+        return dict(servers)
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to read MCP servers from %s: %s", config_path, exc)
+        return {}
